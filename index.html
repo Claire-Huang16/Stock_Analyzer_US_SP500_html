@@ -3157,6 +3157,84 @@ tr.hidden-row{display:none}
     bindTrackButtons();
   }
 
+  // ── 命中追蹤匯出：命中紀錄右邊接上追蹤報酬（持有天數、最新價、目前／5／10／20日報酬、最大漲幅、最大回檔），深色彩色＋篩選 ──
+  var TRACK_PERF_COLS = ['持有天數', '最新價', '目前報酬%', '5日報酬%', '10日報酬%', '20日報酬%', '最大漲幅%', '最大回檔%'];
+  function trackLogWithPerf() {
+    var log = getHitLog(), idx = {};
+    (trackPerf || []).forEach(function(p) { idx[p['日期'] + '|' + p['股票代號']] = p; });
+    return log.map(function(r) {
+      var o = Object.assign({}, r), p = idx[r['日期'] + '|' + r['股票代號']] || {};
+      TRACK_PERF_COLS.forEach(function(c) { o[c] = p[c] == null ? null : p[c]; });
+      return o;
+    });
+  }
+  function xlObjectSheet(wb, name, rows, cols, widths) {
+    var ws = wb.addWorksheet(name), BG = 'FF12172A', HBG = 'FF1C2236';
+    ws.columns = cols.map(function(c, i) { return { width: (widths && widths[i]) || Math.min(Math.max(c.length * 2 + 2, 10), 18) }; });
+    var hRow = ws.getRow(1);
+    cols.forEach(function(c, i) { xlStyleCell(hRow.getCell(i + 1), [xlF(c, 'FF8A8F9C', true)], HBG, true); });
+    hRow.height = 30;
+    rows.forEach(function(r, ri) {
+      var row = ws.getRow(ri + 2), texts = [];
+      cols.forEach(function(c, i) {
+        var v = r[c], cell = row.getCell(i + 1), col = 'FFE0E0E0', bold = false;
+        if (v == null || v === '') v = '';
+        var isRet = /報酬|漲幅|回檔|漲跌/.test(c) && typeof v === 'number';
+        if (isRet) col = v > 0 ? 'FFEF5350' : (v < 0 ? 'FF26A69A' : 'FFE0E0E0');
+        if (c === '股票代號' || c === '最新價' || c === '股價') { col = 'FFFFFFFF'; bold = true; }
+        if (c === '命中編號') {
+          var runs = [];
+          String(v).split(/\s+/).filter(Boolean).forEach(function(cd, k) {
+            if (k) runs.push(xlF(' ', 'FFE0E0E0'));
+            runs.push(xlF(cd, HIT_CODE_COLORS[cd[0]] || 'FFE0E0E0', true));
+          });
+          xlStyleCell(cell, runs, BG, false);
+        } else if (c === '命中組合' || c === '勝率' || c === '飆股比例' || c === 't值') {
+          var lines = String(v).split('\n'), codes = String(r['命中編號'] || '').split(/\s+/), rr = [];
+          lines.forEach(function(ln, k) {
+            if (k) rr.push(xlF('\n', 'FFE0E0E0'));
+            var cc = (ln.match(/^[S#MWF]/) || [codes[k] ? codes[k][0] : ''])[0];
+            rr.push(xlF(ln, HIT_CODE_COLORS[cc] || 'FFE0E0E0', c === '命中組合'));
+          });
+          xlStyleCell(cell, rr.filter(function(x) { return x.text !== ''; }), BG, false);
+        } else {
+          xlStyleCell(cell, [xlF(typeof v === 'number' ? String(v) : String(v), col, bold)], BG, false);
+          if (typeof v === 'number') { cell.value = v; cell.alignment = { vertical: 'top', horizontal: 'right' }; if (isRet) cell.numFmt = '+0.00;-0.00;0.00'; }
+        }
+        texts.push(String(v));
+      });
+      row.height = xlRowHeight(texts, cols.map(function(c, i) { return (widths && widths[i]) || 12; }));
+    });
+    ws.views = [{ state: 'frozen', xSplit: 3, ySplit: 1 }];
+    if (rows.length) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: rows.length + 1, column: cols.length } };
+    return ws;
+  }
+  function exportTrackingExcel() {
+    var fname = '美股命中追蹤_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+    var log = trackLogWithPerf(), cols = HIT_COLS.concat(TRACK_PERF_COLS);
+    if (window.ExcelJS) {
+      try {
+        var wb = new ExcelJS.Workbook();
+        xlObjectSheet(wb, '命中紀錄', log, cols, [12, 10, 16, 10, 9, 70, 28, 22, 28, 22, 9, 10, 11, 10, 10, 10, 11, 11]);
+        if (trackPerf) {
+          var pc = Object.keys(trackPerf.reduce(function(o, r) { Object.keys(r).forEach(function(k) { o[k] = 1; }); return o; }, {}));
+          xlObjectSheet(wb, '追蹤明細', trackPerf, pc, pc.map(function(c) { return c === '命中組合' ? 70 : (c === '命中編號' ? 22 : (c === '股票名' ? 16 : 11)); }));
+          var sm = comboTrackSummary(trackPerf), scs = Object.keys(sm.reduce(function(o, r) { Object.keys(r).forEach(function(k) { o[k] = 1; }); return o; }, {}));
+          xlObjectSheet(wb, '組合彙總', sm, scs, scs.map(function(c) { return /組合/.test(c) ? 60 : 12; }));
+        }
+        xlAddIndexSheet(wb);
+        return xlDownload(wb, fname);
+      } catch (e) { console.warn('ExcelJS 匯出失敗，改用純文字匯出', e); }
+    }
+    var wb2 = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(log, { header: cols }), '命中紀錄');
+    if (trackPerf) {
+      XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(trackPerf), '追蹤明細');
+      XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(comboTrackSummary(trackPerf)), '組合彙總');
+    }
+    XLSX.writeFile(wb2, fname);
+  }
+
   function bindTrackButtons() {
     var el;
     if ((el = document.getElementById('btnUpdTrack'))) el.addEventListener('click', async function() {
@@ -3171,15 +3249,7 @@ tr.hidden-row{display:none}
       renderTracking();
     });
     if ((el = document.getElementById('selTrackDay'))) el.addEventListener('change', function() { trackDayFilter = this.value; renderTracking(); });
-    if ((el = document.getElementById('btnExpTrack'))) el.addEventListener('click', function() {
-      var wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(getHitLog(), { header: HIT_COLS }), '命中紀錄');
-      if (trackPerf) {
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(trackPerf), '追蹤明細');
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(comboTrackSummary(trackPerf)), '組合彙總');
-      }
-      XLSX.writeFile(wb, '美股命中追蹤_' + new Date().toISOString().slice(0, 10) + '.xlsx');
-    });
+    if ((el = document.getElementById('btnExpTrack'))) el.addEventListener('click', function() { exportTrackingExcel(); });
     if ((el = document.getElementById('btnBackupTrack'))) el.addEventListener('click', function() {
       var blob = new Blob([JSON.stringify(getHitLog())], { type: 'application/json' });
       var a = document.createElement('a');
