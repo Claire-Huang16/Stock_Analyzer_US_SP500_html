@@ -2753,6 +2753,7 @@ tr.hidden-row{display:none}
       row.height = xlRowHeight(texts, widths.slice(0, nBase));
     });
     ws.views = [{ state: 'frozen', xSplit: 2, ySplit: top }];
+    if (rIdx > top + 1) ws.autoFilter = { from: { row: top, column: 1 }, to: { row: rIdx - 1, column: widths.length } };   // 每個欄位都可篩選
     if (opts.summary) xlAddIndexSheet(wb);
     return xlDownload(wb, (filenamePrefix || '匯出資料') + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
   }
@@ -2973,6 +2974,7 @@ tr.hidden-row{display:none}
     });
     tmpTbl.remove();
     ws.views = [{ state: 'frozen', xSplit: 3, ySplit: top }];
+    if (recs.length) ws.autoFilter = { from: { row: top, column: 1 }, to: { row: top + recs.length, column: widths.length } };   // 每個欄位都可篩選
     xlAddIndexSheet(wb);
     return xlDownload(wb, filenamePrefix + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
   }
