@@ -6,6 +6,7 @@
 <title>US技術分析全攻略 · 美股評分系統</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.26.0/plotly.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:'Noto Sans TC',sans-serif}
@@ -2453,15 +2454,323 @@ tr.hidden-row{display:none}
   // 顯示都會反映在匯出結果裡），把每個儲存格的 <br> 換成換行，其餘HTML標籤去掉，
   // 只留文字內容，用SheetJS產生.xlsx檔案下載。selector可以是CSS選擇器字串，也可以
   // 直接傳table元素本身。
-  function exportTableToExcel(selector, filenamePrefix, sheetName) {
+  // ── 帶格式的 Excel 匯出（ExcelJS）：每個儲存格保留畫面上的文字顏色、粗體、分行與深色底色，
+  //    跟網頁顯示一致；ExcelJS 載入失敗時退回 SheetJS 純文字匯出 ──
+  var XL_FONT = 'Microsoft JhengHei';
+  function xlParseColor(c) {
+    var m = /rgba?\(([^)]+)\)/.exec(c || '');
+    if (!m) return null;
+    var p = m[1].split(',').map(function(x) { return parseFloat(x); });
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+  function xlHex(c) {
+    return 'FF' + [c.r, c.g, c.b].map(function(v) { return ('0' + Math.round(v).toString(16)).slice(-2); }).join('').toUpperCase();
+  }
+  // 由外往內疊加各層半透明底色，算出儲存格實際看到的背景色
+  function xlEffectiveBg(el) {
+    var chain = [];
+    for (var n = el; n && n.nodeType === 1; n = n.parentElement) chain.push(n);
+    var base = { r: 10, g: 14, b: 26, a: 1 };
+    chain.reverse().forEach(function(n) {
+      var c = xlParseColor(getComputedStyle(n).backgroundColor);
+      if (c && c.a > 0) base = { r: base.r * (1 - c.a) + c.r * c.a, g: base.g * (1 - c.a) + c.g * c.a, b: base.b * (1 - c.a) + c.b * c.a, a: 1 };
+    });
+    return xlHex(base);
+  }
+  function xlFontOf(node) {
+    var cs = getComputedStyle(node), col = xlParseColor(cs.color);
+    var px = parseFloat(cs.fontSize) || 12;
+    return { name: XL_FONT, size: Math.max(8, Math.round(px * 0.8)), bold: parseInt(cs.fontWeight, 10) >= 600,
+             color: { argb: col ? xlHex(col) : 'FFE0E0E0' } };
+  }
+  // 把一個 td/th 轉成 ExcelJS 的 richText（每段文字各自的顏色／粗體），<br> 與區塊元素轉成換行
+  function xlRichText(el) {
+    var runs = [];
+    var nl = function() { if (runs.length && !/\n$/.test(runs[runs.length - 1].text)) runs.push({ text: '\n', font: runs[runs.length - 1].font }); };
+    (function walk(node) {
+      Array.prototype.forEach.call(node.childNodes, function(ch) {
+        if (ch.nodeType === 3) {
+          var t = ch.textContent.replace(/\s+/g, ' ');
+          if (t.trim()) {
+            if (runs.length && /\n$/.test(runs[runs.length - 1].text)) t = t.replace(/^ /, '');
+            runs.push({ text: t, font: xlFontOf(ch.parentElement) });
+          }
+        } else if (ch.nodeType === 1) {
+          if (ch.classList.contains('dmi-pop') || ch.classList.contains('sort-icon')) return;
+          var cs = getComputedStyle(ch);
+          if (cs.display === 'none') return;
+          if (ch.tagName === 'BR') { nl(); return; }
+          var block = cs.display === 'block' || cs.display === 'flex' || ch.tagName === 'DIV';
+          if (block) nl();
+          walk(ch);
+          if (block) nl();
+          else if (cs.display === 'inline-block' && runs.length && !/[\s]$/.test(runs[runs.length - 1].text)) runs.push({ text: ' ', font: runs[runs.length - 1].font });
+        }
+      });
+    })(el);
+    while (runs.length && !runs[runs.length - 1].text.trim()) runs.pop();
+    runs.forEach(function(r) { r.text = r.text.replace(/ +\n/g, '\n'); });
+    return runs;
+  }
+  function xlDownload(wb, filename) {
+    return wb.xlsx.writeBuffer().then(function(buf) {
+      var blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = filename;
+      document.body.appendChild(a); a.click();
+      setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    });
+  }
+  function xlStyleCell(cell, runs, bg, isHeader) {
+    if (!runs.length) cell.value = '';
+    else if (runs.length === 1) { cell.value = runs[0].text; cell.font = runs[0].font; }
+    else { cell.value = { richText: runs }; cell.font = runs[0].font; }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+    cell.alignment = { wrapText: true, vertical: isHeader ? 'middle' : 'top' };
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF2A2E3A' } } };
+  }
+  function xlRowHeight(texts, widths) {
+    var lines = 1;
+    texts.forEach(function(t, i) {
+      var w = widths[i] || 10, n = 0;
+      String(t).split('\n').forEach(function(seg) {
+        var len = 0; for (var k = 0; k < seg.length; k++) len += seg.charCodeAt(k) > 255 ? 2 : 1;
+        n += Math.max(1, Math.ceil(len / Math.max(w - 1, 4)));
+      });
+      if (n > lines) lines = n;
+    });
+    return Math.min(15 * lines + 4, 400);
+  }
+  // ── 匯出附加內容（2026-10-06）：表頭放大盤摘要表、右側加上所有技術訊號條件欄、另附「t值與組合型態索引」工作表 ──
+  function xlF(t, col, bold, size) { return { text: t, font: { name: XL_FONT, size: size || 10, bold: !!bold, color: { argb: col || 'FFE0E0E0' } } }; }
+  function xlCats() {
+    return [['S', '選股型', 'FF00C864', STOCK_PICK_COMBOS], ['#', '高勝率', 'FF7C3AED', PINNED_COMBOS], ['M', '高標股', 'FFFF9800', MOONSHOT_COMBOS],
+            ['W', '回測高勝率', 'FF00BCD4', BT_WIN_COMBOS], ['F', '回測飆股', 'FFE91E63', BT_HOT_COMBOS]];
+  }
+  var XL_TAG_COLORS = { '✅': 'FF4CAF50', '❌': 'FFFF5555', '⚠️': 'FFF0A500' };
+  // 每檔股票今日成立的技術訊號條件（跟「多因子複選搜尋」用的條件清單相同）
+  function xlFlagMatrix() {
+    var frs = batchResults.map(function(r) { try { return computeLiveFlagsRow(r); } catch (e) { return null; } });
+    var valid = frs.filter(Boolean), defs = valid.length ? buildConditionFlags(valid) : {}, names = Object.keys(defs), byId = {};
+    batchResults.forEach(function(r, i) {
+      var hit = {};
+      if (frs[i]) names.forEach(function(n) { try { if (defs[n](frs[i])) hit[n] = 1; } catch (e) {} });
+      byId[r.stockId] = hit;
+    });
+    return { names: names, byId: byId };
+  }
+  function xlFillRow(ws, r, ncols, bg) {
+    for (var c = 1; c <= ncols; c++) ws.getRow(r).getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+  }
+  // 表頭：標題、今日大盤狀態、四種大盤狀態的摘要表（標出今天）、各清單在今日大盤下的 ✅/⚠️/❌ 數、「大盤適用」欄說明
+  function xlWriteRegimeHeader(ws, title, ncols) {
+    var BG = 'FF0A0E1A', r = 1, g = batchMarketRegime(), span = Math.max(ncols, 10);
+    var put = function(runs, h) {
+      xlFillRow(ws, r, span, BG);
+      ws.mergeCells(r, 1, r, span);
+      var c = ws.getRow(r).getCell(1);
+      c.value = runs.length === 1 ? runs[0].text : { richText: runs };
+      c.font = runs[0].font;
+      c.alignment = { wrapText: true, vertical: 'middle' };
+      ws.getRow(r).height = h || 20; r++;
+    };
+    put([xlF(title + '　' + new Date().toISOString().slice(0, 10), 'FFFFFFFF', true, 14)], 26);
+    if (g) {
+      put([xlF('🧭 今日大盤狀態：', 'FF8EC5FF', true, 11), xlF(MARKET_REGIMES[g][0], 'FFFFD54F', true, 12), xlF('（' + MARKET_REGIMES[g][1] + '）　→　' + REGIME_ADVICE[g], g === 2 ? 'FFFF9800' : 'FF8EC5FF', false, 11)], 34);
+    } else {
+      put([xlF('🧭 今日大盤狀態：無大盤資料（這次抓不到指數），「大盤適用」欄不標示', 'FFFF9800', true, 11)]);
+    }
+    // 大盤摘要表（四種大盤狀態）
+    var hdr = ws.getRow(r);
+    xlFillRow(ws, r, span, 'FF1C2236');
+    [['大盤狀態', 1, 2], ['判斷方式', 3, 5], ['這種大盤下的回測建議', 6, span]].forEach(function(h) {
+      ws.mergeCells(r, h[1], r, h[2]);
+      var c = hdr.getCell(h[1]); c.value = h[0]; c.font = xlF('', 'FF8A8F9C', true).font; c.alignment = { vertical: 'middle' };
+    });
+    hdr.height = 18; r++;
+    [1, 2, 3, 4].forEach(function(k) {
+      var cur = k === g, row = ws.getRow(r);
+      xlFillRow(ws, r, span, cur ? 'FF2A2410' : 'FF12172A');
+      [[MARKET_REGIMES[k][0] + (cur ? '　◀ 今日' : ''), 1, 2], [MARKET_REGIMES[k][1], 3, 5], [REGIME_ADVICE[k], 6, span]].forEach(function(v, j) {
+        ws.mergeCells(r, v[1], r, v[2]);
+        var c = row.getCell(v[1]);
+        c.value = v[0];
+        c.font = xlF('', cur ? 'FFFFD54F' : (j === 0 ? 'FFE0E0E0' : 'FFB0B8C8'), cur || j === 0, 10).font;
+        c.alignment = { wrapText: true, vertical: 'middle' };
+      });
+      row.height = 30; r++;
+    });
+    if (g) {
+      var runs = [xlF('各清單在「' + MARKET_REGIMES[g][0] + '」下的三年回測：', 'FFB0B8C8', true)];
+      xlCats().forEach(function(ct) {
+        var n = { '✅': 0, '⚠️': 0, '❌': 0 };
+        ct[3].forEach(function(c) { var t = regimeTag(c, g); if (t) n[t]++; });
+        runs.push(xlF('　' + ct[0] + ct[1] + ' ', ct[2], true));
+        ['✅', '⚠️', '❌'].forEach(function(t) { runs.push(xlF(t + n[t] + ' ', XL_TAG_COLORS[t])); });
+      });
+      put(runs, 22);
+    }
+    put([xlF('「大盤適用」欄：', 'FFB0B8C8', true), xlF('✅', 'FF4CAF50', true), xlF('＝這種大盤下三年回測有效（依日t≥2且超額為正）　', 'FFB0B8C8'),
+         xlF('❌', 'FFFF5555', true), xlF('＝回測超額為負　', 'FFB0B8C8'), xlF('⚠️', 'FFF0A500', true), xlF('＝普通。　右側「技術訊號條件」欄：', 'FFB0B8C8'),
+         xlF('✓', 'FF00C864', true), xlF('＝今日條件成立。　組合編號的 t 值、組合型態請看「t值與組合型態索引」工作表。', 'FFB0B8C8')], 22);
+    xlFillRow(ws, r, span, BG); r++;
+    return r;
+  }
+  // 技術訊號條件欄的表頭（橫書、自動換行，欄寬15）與內容
+  function xlFlagHeader(cell, name) {
+    cell.value = name;
+    cell.font = { name: XL_FONT, size: 9, bold: true, color: { argb: 'FF8EC5FF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF16203A' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF2A2E3A' } }, left: { style: 'hair', color: { argb: 'FF2A2E3A' } } };
+  }
+  function xlFlagCell(cell, on, bg) {
+    cell.value = on ? '✓' : '';
+    cell.font = { name: XL_FONT, size: 10, bold: true, color: { argb: 'FF00C864' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: on ? 'FF0F2A1C' : bg } };
+    cell.alignment = { horizontal: 'center', vertical: 'top' };
+    cell.border = { bottom: { style: 'thin', color: { argb: 'FF2A2E3A' } }, left: { style: 'hair', color: { argb: 'FF2A2E3A' } } };
+  }
+  function xlRegimeCellText(combo) {
+    var out = [];
+    [1, 2, 3, 4].forEach(function(k) {
+      var row = REGIME_STATS[comboNormKey(combo)], st = row ? row[k - 1] : null, t = regimeTag(combo, k);
+      out.push(st && st[0] >= REGIME_MIN_N ? { tag: t, text: (t || '') + ' ' + (st[2] >= 0 ? '+' : '') + st[2] + '% t' + (st[3] == null ? '-' : st[3]) } : { tag: '', text: '樣本不足' });
+    });
+    return out;
+  }
+  function xlFmtHz(o, pct) {
+    var ks = Object.keys(o || {}).filter(function(h) { return o[h] != null; }).sort(function(a, b) { return a - b; });
+    return ks.map(function(h) { return h + '日' + o[h] + (pct ? '%' : ''); }).join(' / ');
+  }
+  // 「t值與組合型態索引」工作表：上半＝組合型態分級；下半＝所有組合編號的 t 值、勝率、飆股比例與四種大盤下的表現
+  function xlAddIndexSheet(wb) {
+    var ws = wb.addWorksheet('t值與組合型態索引'), g = batchMarketRegime(), BG = 'FF12172A', HBG = 'FF1C2236';
+    var widths = [8, 11, 7, 66, 9, 9, 9, 30, 20, 17, 17, 17, 17, 10];
+    ws.columns = widths.map(function(w) { return { width: w }; });
+    var NC = widths.length, r = 1;
+    var title = function(t) {
+      xlFillRow(ws, r, NC, 'FF0A0E1A'); ws.mergeCells(r, 1, r, NC);
+      var c = ws.getRow(r).getCell(1); c.value = t; c.font = xlF('', 'FFFFFFFF', true, 13).font; c.alignment = { vertical: 'middle' };
+      ws.getRow(r).height = 24; r++;
+    };
+    var header = function(cols) {
+      var row = ws.getRow(r);
+      cols.forEach(function(h, i) { xlStyleCell(row.getCell(i + 1), [xlF(h, 'FF8A8F9C', true)], HBG, true); });
+      for (var c = cols.length + 1; c <= NC; c++) row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HBG } };
+      row.height = 20; return r++;
+    };
+    // A. 組合型態
+    title('🏷️ 組合型態（依命中類別 S/#/M/W/F 的組合分級）');
+    header(['型態', '類別組合', '', '回測說明']);
+    ['進攻', '穩健', '彩券'].forEach(function(k) {
+      var row = ws.getRow(r), lk = COMBO_STYLE_LOOK[k], col = 'FF' + lk[1].replace('#', '').toUpperCase();
+      var keys = Object.keys(COMBO_STYLE_RULES).filter(function(c) { return COMBO_STYLE_RULES[c] === k; });
+      xlStyleCell(row.getCell(1), [xlF(lk[0], col, true, 11)], BG, false);
+      ws.mergeCells(r, 2, r, 3); xlStyleCell(row.getCell(2), [xlF(keys.join('、'), col, true)], BG, false);
+      ws.mergeCells(r, 4, r, NC); xlStyleCell(row.getCell(4), [xlF(COMBO_STYLE_NOTE[k], 'FFB0B8C8')], BG, false);
+      row.height = 34; r++;
+    });
+    var lr = ws.getRow(r); ws.mergeCells(r, 1, r, NC);
+    var lg = [xlF('類別代號：', 'FFB0B8C8', true)];
+    xlCats().forEach(function(ct) { lg.push(xlF(ct[0] + '＝' + ct[1] + '（' + ct[3].length + '組）　', ct[2], true)); });
+    xlStyleCell(lr.getCell(1), lg, BG, false); lr.height = 20; r++;
+    xlFillRow(ws, r, NC, 'FF0A0E1A'); r++;
+    // B. 組合 t 值索引
+    title('📇 組合 t 值索引（t＝扣掉同一天大盤後的超額報酬 t 值，>2 較可信；四種大盤欄＝20日超額與依日 t）');
+    var hr = header(['編號', '類別', '擇時', '條件組合', 't(5日)', 't(10日)', 't(20日)', '勝率', '飆股比例', '①多頭', '②多頭回檔', '③空頭反彈', '④空頭', '今日適用']);
+    xlCats().forEach(function(ct) {
+      ct[3].forEach(function(c, i) {
+        var st = comboStatsFor(c, ct[0]), row = ws.getRow(r), rg = xlRegimeCellText(c), today = g ? regimeTag(c, g) : '';
+        var timing = isTimingCombo(c);
+        var cells = [
+          [xlF(ct[0] + (i + 1), ct[2], true)], [xlF(ct[1], ct[2])], [xlF(timing ? '⏱' : '', 'FFF0A500')], [xlF(c.join('＋'), 'FFE0E0E0')],
+          [xlF(st.t[5] != null ? String(st.t[5]) : '', st.t[5] >= 2 ? 'FFFFFFFF' : 'FF8A8F9C', st.t[5] >= 2)],
+          [xlF(st.t[10] != null ? String(st.t[10]) : '', st.t[10] >= 2 ? 'FFFFFFFF' : 'FF8A8F9C', st.t[10] >= 2)],
+          [xlF(st.t[20] != null ? String(st.t[20]) : '', st.t[20] >= 2 ? 'FFFFFFFF' : 'FF8A8F9C', st.t[20] >= 2)],
+          [xlF(xlFmtHz(st.win, true), 'FFB0B8C8')], [xlF(xlFmtHz(st.moon, true), 'FFE91E63')]
+        ];
+        rg.forEach(function(x) { cells.push([xlF(x.text, x.tag ? XL_TAG_COLORS[x.tag] : 'FF555555', !!x.tag)]); });
+        cells.push([xlF(today || '－', today ? XL_TAG_COLORS[today] : 'FF555555', true, 11)]);
+        cells.forEach(function(runs, j) {
+          runs = runs.filter(function(x) { return x.text !== ''; });
+          xlStyleCell(row.getCell(j + 1), runs, BG, false);
+        });
+        row.height = 18; r++;
+      });
+    });
+    ws.autoFilter = { from: { row: hr, column: 1 }, to: { row: r - 1, column: NC } };
+    ws.views = [{ state: 'frozen', ySplit: hr }];
+  }
+  function xlRegimeFitText(r) {
+    var f = regimeFit(r);
+    if (!f.reg) return [];
+    var runs = [];
+    ['✅', '❌', '⚠️'].forEach(function(t) {
+      if (!f.b[t].length) return;
+      if (runs.length) runs.push(xlF('\n', 'FFE0E0E0'));
+      runs.push(xlF(t + f.b[t].length + ' ', XL_TAG_COLORS[t], true));
+      runs.push(xlF(f.b[t].join(' '), XL_TAG_COLORS[t]));
+    });
+    return runs;
+  }
+
+  function exportTableToExcelStyled(table, filenamePrefix, sheetName, opts) {
+    opts = opts || {};
+    var wb = new ExcelJS.Workbook(), ws = wb.addWorksheet(sheetName || '工作表1');
+    var ths = Array.prototype.slice.call(table.querySelectorAll('thead th'));
+    var widths = ths.map(function(th) { return Math.min(Math.max(Math.round(th.getBoundingClientRect().width / 6.5), 8), 45); });
+    var FM = opts.summary ? xlFlagMatrix() : null, nBase = widths.length;
+    if (FM) FM.names.forEach(function() { widths.push(15); });
+    ws.columns = widths.map(function(w) { return { width: w }; });
+    var top = opts.summary ? xlWriteRegimeHeader(ws, sheetName || '批次分析摘要', nBase) : 1;
+    var hRow = ws.getRow(top);
+    var hTexts = ths.map(function(th, i) {
+      var runs = xlRichText(th);
+      runs.forEach(function(r) { r.text = r.text.replace(/\n/g, ''); });
+      if (runs.length) runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/\s+$/, '');
+      runs = runs.filter(function(r) { return r.text !== ''; });
+      xlStyleCell(hRow.getCell(i + 1), runs, xlEffectiveBg(th), true);
+      return runs.map(function(r) { return r.text; }).join('');
+    });
+    if (FM) FM.names.forEach(function(n, k) { xlFlagHeader(hRow.getCell(nBase + k + 1), n); });
+    if (FM) for (var hc = 1; hc <= nBase; hc++) hRow.getCell(hc).alignment = { wrapText: true, vertical: 'middle' };
+    hRow.height = FM ? 50 : xlRowHeight(hTexts, widths);
+    var rIdx = top + 1;
+    Array.prototype.forEach.call(table.querySelectorAll('tbody tr'), function(tr) {
+      if (tr.classList.contains('hidden-row')) return;
+      var row = ws.getRow(rIdx++), texts = [], bg = null;
+      Array.prototype.forEach.call(tr.querySelectorAll('td'), function(td, i) {
+        var runs = xlRichText(td);
+        bg = xlEffectiveBg(td);
+        xlStyleCell(row.getCell(i + 1), runs, bg, false);
+        texts.push(runs.map(function(r) { return r.text; }).join(''));
+      });
+      if (FM) {
+        var r0 = batchResults[parseInt(tr.dataset.idx, 10)], hit = r0 ? (FM.byId[r0.stockId] || {}) : {};
+        FM.names.forEach(function(n, k) { xlFlagCell(row.getCell(nBase + k + 1), !!hit[n], bg || 'FF12172A'); });
+      }
+      row.height = xlRowHeight(texts, widths.slice(0, nBase));
+    });
+    ws.views = [{ state: 'frozen', xSplit: 2, ySplit: top }];
+    if (opts.summary) xlAddIndexSheet(wb);
+    return xlDownload(wb, (filenamePrefix || '匯出資料') + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  }
+
+  function exportTableToExcel(selector, filenamePrefix, sheetName, opts) {
     var table = typeof selector === 'string' ? document.querySelector(selector) : selector;
     if (!table) { alert('目前沒有可匯出的分析結果'); return; }
+    if (window.ExcelJS) {
+      try { return exportTableToExcelStyled(table, filenamePrefix, sheetName, opts); }
+      catch (e) { console.warn('ExcelJS 匯出失敗，改用純文字匯出', e); }
+    }
 
     function cellToText(el) {
       var clone = el.cloneNode(true);
       clone.querySelectorAll('.dmi-pop').forEach(function(x) { x.remove(); });
       clone.querySelectorAll('br').forEach(function(br) { br.replaceWith('\n'); });
-      return clone.textContent.replace(/\s+\n/g, '\n').trim();
+      clone.querySelectorAll('div').forEach(function(dv) { dv.prepend('\n'); });
+      return clone.textContent.replace(/\s+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
     }
 
     var headerCells = table.querySelectorAll('thead th');
@@ -2497,7 +2806,7 @@ tr.hidden-row{display:none}
   }
 
   function exportSummaryToExcel() {
-    exportTableToExcel('.summary-table', '批次分析摘要', '批次分析摘要');
+    exportTableToExcel('.summary-table', '批次分析摘要', '批次分析摘要', { summary: true });
   }
 
   function switchTab(idx) {
@@ -2580,7 +2889,99 @@ tr.hidden-row{display:none}
     return out;
   }
 
+  // 命中組合匯出的顏色跟網頁徽章一致：S 綠、# 紫、M 橘、W 青、F 粉紅；漲跌%：漲紅跌綠
+  var HIT_CODE_COLORS = { 'S': 'FF00C864', '#': 'FF7C3AED', 'M': 'FFFF9800', 'W': 'FF00BCD4', 'F': 'FFE91E63' };
+  function exportHitRecordsStyled(recs, filenamePrefix, sheetName) {
+    var wb = new ExcelJS.Workbook(), ws = wb.addWorksheet(sheetName);
+    var SUMCOLS = ['命中類別', '組合型態', '大盤適用', '選股型命中', '指定組合命中'];
+    var COLS = HIT_COLS.slice(0, 5).concat(SUMCOLS).concat(HIT_COLS.slice(5));
+    var widths = [12, 10, 16, 10, 9, 9, 10, 24, 16, 24, 80, 30, 26, 30, 22], nBase = widths.length, FM = xlFlagMatrix();
+    // 跟網頁摘要表同一套畫法：把「命中類別／組合型態／選股型命中／指定組合命中」畫在隱藏表格裡，再照顏色轉成 Excel
+    var tmpTbl = document.createElement('table');
+    tmpTbl.className = 'summary-table';
+    tmpTbl.style.cssText = 'position:absolute;left:-99999px;top:0;width:1600px';
+    document.body.appendChild(tmpTbl);
+    var sumRuns = function(r) {
+      if (!r) return {};
+      var tr = document.createElement('tr');
+      tr.innerHTML = renderHitCategories(r) + renderComboStyle(r) + '<td>' + renderMatchedComboBadges(r, 'S') + '</td><td>' + renderMatchedComboBadges(r, 'PM') + '</td>';
+      tmpTbl.appendChild(tr);
+      var tds = tr.querySelectorAll('td'), o = {};
+      ['命中類別', '組合型態', '選股型命中', '指定組合命中'].forEach(function(k, i) { o[k] = tds[i] ? xlRichText(tds[i]) : []; });
+      tr.remove();
+      return o;
+    };
+    FM.names.forEach(function() { widths.push(15); });
+    ws.columns = widths.map(function(w) { return { width: w }; });
+    var top = xlWriteRegimeHeader(ws, sheetName || '命中組合股票', nBase);
+    var byId = {};
+    batchResults.forEach(function(r) { byId[r.stockId] = r; });
+    var BG = 'FF12172A', HBG = 'FF1C2236', base = { name: XL_FONT, size: 10, color: { argb: 'FFE0E0E0' } };
+    var hRow = ws.getRow(top);
+    COLS.forEach(function(h, i) {
+      xlStyleCell(hRow.getCell(i + 1), [{ text: h, font: { name: XL_FONT, size: 10, bold: true, color: { argb: 'FF8A8F9C' } } }], HBG, true);
+    });
+    FM.names.forEach(function(n, k) { xlFlagHeader(hRow.getCell(nBase + k + 1), n); });
+    for (var hc = 1; hc <= nBase; hc++) hRow.getCell(hc).alignment = { wrapText: true, vertical: 'middle' };
+    hRow.height = 50;
+    recs.forEach(function(rec, ri) {
+      var row = ws.getRow(top + 1 + ri), codes = String(rec['命中編號'] || '').split(' ');
+      var lineColor = function(line, k) {
+        var c = (String(line).match(/^[S#MWF]/) || [codes[k] ? codes[k][0] : ''])[0];
+        return HIT_CODE_COLORS[c] || 'FFE0E0E0';
+      };
+      var texts = [], SR = null, cellCenter = [];
+      COLS.forEach(function(col, i) {
+        var v = rec[col], runs;
+        if (col === '大盤適用') {
+          runs = byId[rec['股票代號']] ? xlRegimeFitText(byId[rec['股票代號']]) : [];
+        } else if (SUMCOLS.indexOf(col) >= 0) {
+          if (!SR) SR = sumRuns(byId[rec['股票代號']]);
+          runs = (SR[col] || []).slice();
+          if (col === '命中類別' || col === '組合型態') cellCenter.push(i + 1);
+        } else if (col === '命中組合' || col === '勝率' || col === '飆股比例' || col === 't值') {
+          var lines = String(v == null ? '' : v).split('\n');
+          runs = [];
+          lines.forEach(function(line, k) {
+            if (k) runs.push({ text: '\n', font: base });
+            runs.push({ text: line, font: { name: XL_FONT, size: 10, bold: col === '命中組合', color: { argb: lineColor(col === '命中組合' ? line : '', k) } } });
+          });
+        } else if (col === '命中編號') {
+          runs = [];
+          codes.forEach(function(cd, k) {
+            if (k) runs.push({ text: ' ', font: base });
+            runs.push({ text: cd, font: { name: XL_FONT, size: 10, bold: true, color: { argb: HIT_CODE_COLORS[cd[0]] || 'FFE0E0E0' } } });
+          });
+        } else if (col === '漲跌%') {
+          var num = +v;
+          runs = [{ text: v == null ? '' : ((num > 0 ? '+' : '') + num.toFixed(2) + '%'), font: { name: XL_FONT, size: 10, color: { argb: num >= 0 ? 'FFEF5350' : 'FF26A69A' } } }];
+        } else if (col === '股票代號') {
+          runs = [{ text: String(v == null ? '' : v), font: { name: XL_FONT, size: 10, bold: true, color: { argb: 'FFFFFFFF' } } }];
+        } else if (col === '股價') {
+          runs = [{ text: v == null ? '' : (+v).toFixed(2), font: { name: XL_FONT, size: 10, bold: true, color: { argb: 'FFFFFFFF' } } }];
+        } else {
+          runs = [{ text: String(v == null ? '' : v), font: base }];
+        }
+        runs = runs.filter(function(r) { return r.text !== ''; });
+        xlStyleCell(row.getCell(i + 1), runs, BG, false);
+        texts.push(runs.map(function(r) { return r.text; }).join(''));
+      });
+      cellCenter.forEach(function(ci) { row.getCell(ci).alignment = { wrapText: true, vertical: 'top', horizontal: 'center' }; });
+      var hit = FM.byId[rec['股票代號']] || {};
+      FM.names.forEach(function(n, k) { xlFlagCell(row.getCell(nBase + k + 1), !!hit[n], BG); });
+      row.height = xlRowHeight(texts, widths.slice(0, nBase));
+    });
+    tmpTbl.remove();
+    ws.views = [{ state: 'frozen', xSplit: 3, ySplit: top }];
+    xlAddIndexSheet(wb);
+    return xlDownload(wb, filenamePrefix + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  }
+
   function exportHitRecords(recs, filenamePrefix, sheetName) {
+    if (window.ExcelJS) {
+      try { return exportHitRecordsStyled(recs, filenamePrefix, sheetName); }
+      catch (e) { console.warn('ExcelJS 匯出失敗，改用純文字匯出', e); }
+    }
     var ws = XLSX.utils.json_to_sheet(recs, { header: HIT_COLS });
     ws['!cols'] = [{wch:12},{wch:10},{wch:12},{wch:10},{wch:9},{wch:80},{wch:26},{wch:26},{wch:26},{wch:22}];
     var wb = XLSX.utils.book_new();
