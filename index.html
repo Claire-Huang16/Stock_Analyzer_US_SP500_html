@@ -170,9 +170,10 @@ tr.hidden-row{display:none}
         <button type="button" class="list-toggle-btn" id="btnListAll2000A" data-list="all2000a" title="全美股（NYSE＋NASDAQ）股價≥10、成交金額≥1000萬美元，取前2000檔，依成交金額排名交錯分成A／B兩份（A＝第1、3、5…名），各約1000檔；需要 API Key，同一天只抓一次"><span class="lt-label">全美股2000-A</span></button>
         <button type="button" class="list-toggle-btn" id="btnListAll2000B" data-list="all2000b" title="全美股（NYSE＋NASDAQ）股價≥10、成交金額≥1000萬美元，取前2000檔，依成交金額排名交錯分成A／B兩份（B＝第2、4、6…名），各約1000檔；需要 API Key，同一天只抓一次"><span class="lt-label">全美股2000-B</span></button>
         <button type="button" class="list-toggle-btn" data-list="my"><span class="lt-label">我的清單</span><span class="lt-clear" data-clear="my" title="清除此清單">×</span></button>
-        <button type="button" class="list-toggle-btn" data-list="my1"><span class="lt-label">我的清單1</span><span class="lt-clear" data-clear="my1" title="清除此清單">×</span></button>
-        <button type="button" class="list-toggle-btn" data-list="my2"><span class="lt-label">我的清單2</span><span class="lt-clear" data-clear="my2" title="清除此清單">×</span></button>
-        <button type="button" class="list-toggle-btn" data-list="my3"><span class="lt-label">我的清單3</span><span class="lt-clear" data-clear="my3" title="清除此清單">×</span></button>
+        <button type="button" class="list-toggle-btn" data-list="my1"><span class="lt-label">進攻組合型態</span><span class="lt-clear" data-clear="my1" title="清除此清單">×</span></button>
+        <button type="button" class="list-toggle-btn" data-list="my2"><span class="lt-label">穩健組合型態</span><span class="lt-clear" data-clear="my2" title="清除此清單">×</span></button>
+        <button type="button" class="list-toggle-btn" data-list="my3"><span class="lt-label">彩券組合型態</span><span class="lt-clear" data-clear="my3" title="清除此清單">×</span></button>
+        <button type="button" class="list-toggle-btn" data-list="my4"><span class="lt-label">我的清單4</span><span class="lt-clear" data-clear="my4" title="清除此清單">×</span></button>
       </div>
     </div>
     <textarea id="iStocks" rows="6" placeholder="每行一個，或逗號分隔&#10;例：&#10;AAPL&#10;MSFT&#10;NVDA&#10;GOOGL" style="width:100%;margin-top:6px;padding:9px 12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#fff;font-size:13px;outline:none;resize:vertical;line-height:1.6"></textarea>
@@ -180,9 +181,10 @@ tr.hidden-row{display:none}
       <button type="button" class="list-toggle-btn" id="btnSaveMyList" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">💾 更新我的清單</button>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
-      <button type="button" class="list-toggle-btn" id="btnSaveList1" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為清單1</button>
-      <button type="button" class="list-toggle-btn" id="btnSaveList2" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為清單2</button>
-      <button type="button" class="list-toggle-btn" id="btnSaveList3" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為清單3</button>
+      <button type="button" class="list-toggle-btn" id="btnSaveList1" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為進攻</button>
+      <button type="button" class="list-toggle-btn" id="btnSaveList2" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為穩健</button>
+      <button type="button" class="list-toggle-btn" id="btnSaveList3" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為彩券</button>
+      <button type="button" class="list-toggle-btn" id="btnSaveList4" style="flex:1;padding:7px 6px;font-size:12px;text-align:center">➕ 存為清單4</button>
     </div>
   </div>
   <div class="field">
@@ -348,7 +350,17 @@ tr.hidden-row{display:none}
   // 兩個動作：「更新我的清單」把目前批次股票代號的內容存回我的清單；
   // 「存為清單1／清單2／清單3」是三個各自獨立的按鈕，直接存進指定槽位（若該槽已有
   // 內容會先跳確認再覆蓋，不再是舊版那種自動找空槽的邏輯）。
-  var CUSTOM_LIST_KEYS = { my:'usCustomList_my', my1:'usCustomList_1', my2:'usCustomList_2', my3:'usCustomList_3' };
+  var CUSTOM_LIST_KEYS = { my:'usCustomList_my', my1:'usCustomList_1', my2:'usCustomList_2', my3:'usCustomList_3', my4:'usCustomList_4' };
+  // 清單1/2/3 改名為三種組合型態清單（批次分析摘要可一鍵加入），另加我的清單4
+  var CUSTOM_LIST_NAMES = { my:'我的清單', my1:'進攻組合型態', my2:'穩健組合型態', my3:'彩券組合型態', my4:'我的清單4' };
+  var STYLE_LIST_KIND = { '進攻':'my1', '穩健':'my2', '彩券':'my3' };
+  function addToCustomList(kind, ids) {
+    var cur = getCustomList(kind), seen = {}, added = 0;
+    cur.forEach(function(x) { seen[x] = 1; });
+    ids.forEach(function(x) { if (!seen[x]) { seen[x] = 1; cur.push(x); added++; } });
+    setCustomList(kind, cur);
+    return [added, cur.length];
+  }
 
   function getCustomList(kind) {
     try {
@@ -370,11 +382,11 @@ tr.hidden-row{display:none}
       var lb2000 = document.querySelector('.list-toggle-btn[data-list="all2000' + pt + '"] .lt-label');
       if (lb2000) lb2000.textContent = '全美股2000-' + pt.toUpperCase() + (c2000 ? '(' + all2000Part(c2000.ids, k).length + ')' : '');
     });
-    ['my','my1','my2','my3'].forEach(function(kind) {
+    ['my','my1','my2','my3','my4'].forEach(function(kind) {
       var labelEl = document.querySelector('.list-toggle-btn[data-list="'+kind+'"] .lt-label');
       if (!labelEl) return;
       var n = getCustomList(kind).length;
-      var base = kind === 'my' ? '我的清單' : '我的清單' + kind.slice(2);
+      var base = CUSTOM_LIST_NAMES[kind];
       labelEl.textContent = base + (n ? '(' + n + ')' : '');
     });
   }
@@ -433,7 +445,7 @@ tr.hidden-row{display:none}
     x.addEventListener('click', function(e) {
       e.stopPropagation();
       var kind = x.dataset.clear;
-      if (!confirm('確定要清除「' + (kind === 'my' ? '我的清單' : '我的清單' + kind.slice(2)) + '」嗎？')) return;
+      if (!confirm('確定要清除「' + CUSTOM_LIST_NAMES[kind] + '」嗎？')) return;
       setCustomList(kind, []);
       refreshCustomListLabels();
       var activeBtn = document.querySelector('.list-toggle-btn[data-list="'+kind+'"]');
@@ -453,18 +465,18 @@ tr.hidden-row{display:none}
   });
   // 存為清單1／清單2／清單3：各自獨立按鈕，直接存進指定槽位（不再自動找空槽）。
   // 若該槽已有內容會先跳確認，避免手滑蓋掉舊清單。
-  [1, 2, 3].forEach(function(n) {
+  [1, 2, 3, 4].forEach(function(n) {
     var btn = document.getElementById('btnSaveList' + n);
     var key = 'my' + n;
     btn.addEventListener('click', function() {
       var stocks = parseStocksFromTextarea();
       if (!stocks.length) { alert('批次股票代號目前是空的，沒有可儲存的內容'); return; }
       var existing = getCustomList(key);
-      if (existing.length && !confirm('「我的清單' + n + '」目前已有 ' + existing.length + ' 檔，確定要覆蓋嗎？')) return;
+      if (existing.length && !confirm('「' + CUSTOM_LIST_NAMES['my' + n] + '」目前已有 ' + existing.length + ' 檔，確定要覆蓋嗎？')) return;
       setCustomList(key, stocks);
       refreshCustomListLabels();
       var oldTxt = btn.textContent;
-      btn.textContent = '✅ 已存入清單' + n;
+      btn.textContent = '✅ 已存入' + CUSTOM_LIST_NAMES['my' + n];
       setTimeout(function(){ btn.textContent = oldTxt; }, 1500);
     });
   });
@@ -2357,6 +2369,13 @@ tr.hidden-row{display:none}
           '<button type="button" id="btnAddTrack" style="padding:6px 14px;font-size:12px;font-weight:400;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#ddd;cursor:pointer">📌 加入追蹤</button>' +
           '</span>' +
         '</div>' +
+        '<div style="padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;color:#888">一鍵加入清單：' +
+          ['進攻', '穩健', '彩券'].map(function(st) {
+            var lk = COMBO_STYLE_LOOK[st], n = batchResults.filter(function(r) { return comboStyleOf(r) === st; }).length;
+            return '<button type="button" class="btnAddStyleList" data-style="' + st + '"' + (n ? '' : ' disabled') + ' style="padding:5px 12px;font-size:12px;background:rgba(255,255,255,.04);border:1px solid ' + lk[1] + '88;border-radius:6px;color:' + lk[1] + ';cursor:' + (n ? 'pointer' : 'default') + ';opacity:' + (n ? 1 : .45) + '">' + lk[0] + ' → 「' + CUSTOM_LIST_NAMES[STYLE_LIST_KIND[st]] + '」（' + n + '檔）</button>';
+          }).join('') +
+          '<span style="font-size:11px;color:#666">（加入＝保留原有、重複略過；要重來請先按清單上的 × 清空）</span>' +
+        '</div>' +
         (function() {
           var g = batchMarketRegime();
           if (!g) return '';
@@ -2506,6 +2525,18 @@ tr.hidden-row{display:none}
       if (!recs.length) { alert('這次批次分析沒有股票命中指定組合'); return; }
       exportHitRecords(recs, '美股命中組合股票', '命中組合股票');
     });
+    document.querySelectorAll('.btnAddStyleList').forEach(function(b) {
+      b.addEventListener('click', function() {
+        var st = b.dataset.style, kind = STYLE_LIST_KIND[st];
+        var ids = batchResults.filter(function(r) { return comboStyleOf(r) === st; }).map(function(r) { return r.stockId; });
+        if (!ids.length) return;
+        var res = addToCustomList(kind, ids);
+        refreshCustomListLabels();
+        var old = b.innerHTML;
+        b.textContent = '✅ 新增 ' + res[0] + ' 檔，共 ' + res[1] + ' 檔';
+        setTimeout(function() { b.innerHTML = old; }, 1800);
+      });
+    });
     var addTrackBtn = document.getElementById('btnAddTrack');
     if (addTrackBtn) addTrackBtn.addEventListener('click', function() {
       var n = appendHitLog(buildHitRecords());
@@ -2638,7 +2669,9 @@ tr.hidden-row{display:none}
       c.value = runs.length === 1 ? runs[0].text : { richText: runs };
       c.font = runs[0].font;
       c.alignment = { wrapText: true, vertical: 'middle' };
-      ws.getRow(r).height = h || 20; r++;
+      var tw = 0; for (var ci = 1; ci <= span; ci++) tw += (ws.getColumn(ci).width || 10);
+      var cw = runs.reduce(function(a, x) { return a + Array.from(x.text).reduce(function(b, ch) { return b + (ch.charCodeAt(0) > 255 ? 2 : 1); }, 0) * ((x.font && x.font.size) || 10) / 10; }, 0);
+      ws.getRow(r).height = Math.max(h || 20, Math.ceil(cw / (tw * 0.95)) * 17 + 4); r++;
     };
     put([xlF(title + '　' + new Date().toISOString().slice(0, 10), 'FFFFFFFF', true, 14)], 26);
     if (g) {
@@ -2684,10 +2717,18 @@ tr.hidden-row{display:none}
       put(runs, 22);
     }
     put([xlF('「大盤適用」欄：', 'FFB0B8C8', true), xlF('✅', 'FF4CAF50', true), xlF('＝這種大盤下三年回測有效（依日t≥2且超額為正）　', 'FFB0B8C8'),
-         xlF('❌', 'FFFF5555', true), xlF('＝回測超額為負　', 'FFB0B8C8'), xlF('⚠️', 'FFF0A500', true), xlF('＝普通。　右側「技術訊號條件」欄：', 'FFB0B8C8'),
+         xlF('❌', 'FFFF5555', true), xlF('＝回測超額為負　', 'FFB0B8C8'), xlF('⚠️', 'FFF0A500', true), xlF('＝普通。　主表右側「技術訊號條件」欄：', 'FFB0B8C8'),
          xlF('✓', 'FF00C864', true), xlF('＝今日條件成立。　組合編號的 t 值、組合型態請看「t值與組合型態索引」工作表。', 'FFB0B8C8')], 22);
     xlFillRow(ws, r, span, BG); r++;
     return r;
+  }
+  // 批次分析摘要（大盤狀態／溫度計／K線／大盤指引／四種大盤摘要表）放到獨立的「大盤摘要」工作表
+  function xlAddSummarySheet(wb, title) {
+    var ws = wb.addWorksheet('大盤摘要', { properties: { tabColor: { argb: 'FFFFD54F' } } });
+    ws.columns = [12, 12, 14, 14, 14, 22, 22, 22, 22, 22].map(function(w) { return { width: w }; });
+    var r = xlWriteRegimeHeader(ws, title, 10);
+    ws.views = [{ showGridLines: false }];
+    return ws;
   }
   // 技術訊號條件欄的表頭（橫書、自動換行，欄寬15）與內容
   function xlFlagHeader(cell, name) {
@@ -2796,7 +2837,8 @@ tr.hidden-row{display:none}
     var FM = opts.summary ? xlFlagMatrix() : null, nBase = widths.length;
     if (FM) FM.names.forEach(function() { widths.push(15); });
     ws.columns = widths.map(function(w) { return { width: w }; });
-    var top = opts.summary ? xlWriteRegimeHeader(ws, sheetName || '批次分析摘要', nBase) : 1;
+    if (opts.summary) xlAddSummarySheet(wb, '批次分析摘要');
+    var top = 1;
     var hRow = ws.getRow(top);
     var hTexts = ths.map(function(th, i) {
       var runs = xlRichText(th);
@@ -2994,7 +3036,8 @@ tr.hidden-row{display:none}
     };
     FM.names.forEach(function() { widths.push(15); });
     ws.columns = widths.map(function(w) { return { width: w }; });
-    var top = xlWriteRegimeHeader(ws, sheetName || '命中組合股票', nBase);
+    xlAddSummarySheet(wb, '批次分析摘要');
+    var top = 1;
     var byId = {};
     batchResults.forEach(function(r) { byId[r.stockId] = r; });
     var BG = 'FF12172A', HBG = 'FF1C2236', base = { name: XL_FONT, size: 10, color: { argb: 'FFE0E0E0' } };
